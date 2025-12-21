@@ -8,7 +8,7 @@ from pipelayer import *
 
 root = "data"
 
-USE_PIPELAYER = False
+USE_PIPELAYER = True
 
 mnist_train = MNIST(
     root=root,
@@ -37,11 +37,13 @@ y_train_onehot[torch.arange(y_train.shape[0]), y_train] = 1.0
 batch_size = 64
 lr = 0.001
 
-pipelayer = PipeLayer()
+pipelayer = PipeLayer(device=torch.device("cuda"))
 pipelayer.push_layer(in_features=784, out_features=500, dtype=dtype)
 pipelayer.push_layer(in_features=500, out_features=250, dtype=dtype)
 pipelayer.push_layer(in_features=250, out_features=10, dtype=dtype)
 
-X_train = X_train.view(X_train.shape[0], 784)
+X_train = X_train.view(-1, 784)
+X_batches = torch.split(X_train, batch_size)
+y_batches = torch.split(y_train_onehot, batch_size)
 
-pipelayer.without_pipeline_train(X_train, y_train_onehot, 5)
+pipelayer.without_pipeline_train(X_batches, y_batches, 20)

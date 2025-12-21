@@ -11,12 +11,12 @@ class OperationReturn:
 
 
 class LieanrLayer:
-    def __init__(self, in_features: int, out_features: int, dtype=torch.float32):
-        self.linear = nn.Linear(in_features=in_features, out_features=out_features, bias=True).to(dtype)
+    def __init__(self, in_features: int, out_features: int, dtype=torch.float32, device=torch.device("cpu")):
+        self.linear = nn.Linear(in_features=in_features, out_features=out_features, bias=True).to(dtype).to(device)
         self.linear.weight.requires_grad_(False)
         self.linear.bias.requires_grad_(False)
-        self.dw = torch.zeros_like(self.linear.weight, dtype=dtype)
-        self.db = torch.zeros_like(self.linear.bias, dtype=dtype)
+        self.dw = torch.zeros_like(self.linear.weight, dtype=dtype).to(device)
+        self.db = torch.zeros_like(self.linear.bias, dtype=dtype).to(device)
     
     def update(self, lr: float, batch_size: int):
         self.linear.weight -= self.dw * lr / batch_size
@@ -51,51 +51,57 @@ class LieanrLayer:
 
 class PipeLayer:
     def __init__(self, reram_read_time=29.31, reram_write_time=50.88, 
-                        reram_read_energy=1.08, reram_write_energy=3910):
+                        reram_read_energy=1.08, reram_write_energy=3910, device=torch.device("cpu")):
         self.layers = []
         self.reram_read_time = reram_read_time
         self.reram_write_time = reram_write_time
         self.reram_read_energy = reram_read_energy
         self.reram_write_energy = reram_write_energy
+        self.device = device
     def push_layer(self, in_features: int, out_features: int, dtype=torch.float32):
-        layer =LieanrLayer(in_features, out_features, dtype)
+        layer =LieanrLayer(in_features, out_features, dtype, self.device)
         self.layers.append(layer)
 
-    def without_pipeline_train(self, x, y, epoch: int, batch_size=64, lr=0.001):
+    def without_pipeline_train(self, x_batch, y_batch, epoch: int, lr=0.001):
         time = 0
         energy = 0
         arithmetic = 0
         for _ in range(epoch):
             acc = 0
-            for i in range(x.shape[0]):
-                d_list = [x[i]]
-                for l in range(len(self.layers)):
-                    func = F.relu
-                    if (l == len(self.layers) - 1):
-                        func = F.softmax
+            cnt = 0
+            for batch in range(len(x_batch)):
+                x = x_batch[batch].to(self.device)
+                y = y_batch[batch].to(self.device)
+                batch_size = x.shape[0]
 
-                    output = self.layers[l].forward(d_list[-1], func)
-                    d_list.append(output.output)
-                    time += output.reram_time
-                    energy += output.reram_energy
-                    arithmetic += output.arithmetic
-                
-                if torch.argmax(d_list[-1]) == torch.argmax(y[i]):
-                    acc += 1
-
-                # need update time, energy, arithmetic
-                loss = d_list[-1] - y[i]
-                d_list.pop()
-                    
-                for l in range(len(self.layers) - 1, -1, -1):
-                    output = self.layers[l].backward(d_list.pop(), loss, l != 0)
-                    loss = output.output
-                    time += output.reram_time
-                    energy += output.reram_energy
-                    arithmetic += output.arithmetic
-                
-                # need update time, energy, arithmetic
-                if (i != 0 and i % batch_size == 0) or (i + 1) == x.shape[0]:
+                for i in range(batch_size):
+                    d_list = [x[i]]
                     for l in range(len(self.layers)):
+                        func = F.relu
+                        if (l == len(self.layers) - 1):
+                            func = F.softmax
+
+                        output = self.layers[l].forward(d_list[-1], func)
+                        d_list.append(output.output)
+                        time += output.reram_time
+                        energy += output.reram_energy
+                        arithmetic += output.arithmetic
+                    
+                    cnt += 1
+                    if torch.argmax(d_list[-1]) == torch.argmax(y[i]):
+                        acc += 1
+
+                    # need update time, energy, arithmetic
+                    loss = d_list[-1] - y[i]
+                    d_list.pop()
+                        
+                    for l in range(len(self.layers) - 1, -1, -1):
+                        output = self.layers[l].backward(d_list.pop(), loss, l != 0)
+                        loss = output.output
+                        time += output.reram_time
+                        energy += output.reram_energy
+                        arithmetic += output.arithmetic
+                
+                for l in range(len(self.layers)):
                         self.layers[l].update(lr, batch_size)
-            print(f"acc: {acc / x.shape[0] * 100}%")
+            print(f"acc: {acc / cnt * 100}%")
