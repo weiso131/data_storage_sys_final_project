@@ -1,0 +1,7 @@
+paper
+data
+venv
+*.bin
+*.o
+main
+data
