@@ -24,24 +24,34 @@ class LieanrLayer:
         self.dw = torch.zeros_like(self.linear.weight, dtype=self.linear.weight.dtype)
         self.db = torch.zeros_like(self.linear.bias, dtype=self.linear.bias.dtype)
 
-    def forward(self, x, func=F.relu):
-        time = 0
-        energy = 0
-        # read from memory subarrays, write to morphable subarrays, write to memory subarrays
+    def forward(self, x, func=F.relu, reram_read_time=29.31, reram_write_time=50.88, 
+                        reram_read_energy=1.08, reram_write_energy=3910):
         d = func(self.linear(x))
+
+        time = 16 * ((reram_read_time + reram_write_time) * x.numel() + \
+                        reram_write_time * d.numel())
+        energy = 16 * ((reram_read_energy + reram_write_energy) * x.numel() + \
+                       reram_write_energy * d.numel())
+        # read from memory subarrays, write to morphable subarrays, write to memory subarrays
         arithmetic = 0
         return OperationReturn(d, time, energy, arithmetic)
     
-    def backward(self, last_d, loss, cal_last_loss=True):
+    def backward(self, last_d, loss, cal_last_loss=True, reram_read_time=29.31, reram_write_time=50.88, 
+                        reram_read_energy=1.08, reram_write_energy=3910):
         self.dw += loss.view(-1, 1) @ last_d.view(1, -1)
         self.db += loss
-
-        time = 0  # TODO: meow
-        energy = 0
+        time = 16 * ((reram_read_time + reram_write_time) * last_d.numel() + \
+                    (reram_read_time + reram_write_time) * loss.numel())
+        energy = 16 * ((reram_read_energy + reram_write_energy) * last_d.numel() + \
+                    (reram_read_energy + reram_write_energy) * loss.numel())
         arithmetic = 0
 
         if cal_last_loss:
             last_loss = (self.linear.weight.T @ loss) * (last_d > 0).to(last_d.dtype)
+            time += 16 * reram_write_time * last_loss.numel()
+            energy += 16 * ((reram_read_energy + reram_write_energy) * last_d.numel() + \
+                    (reram_read_energy + reram_write_energy) * loss.numel() + \
+                    reram_write_energy * last_loss.numel())
             return OperationReturn(last_loss, time, energy, arithmetic)
 
         else:
@@ -90,9 +100,13 @@ class PipeLayer:
                     cnt += 1
                     if torch.argmax(d_list[-1]) == torch.argmax(y[i]):
                         acc += 1
-
-                    # need update time, energy, arithmetic
                     loss = d_list[-1] - y[i]
+
+                    time += 16 * ((self.reram_read_time + self.reram_write_time) * (d_list[-1].numel() + y[i].numel()) + \
+                                   self.reram_write_time * loss.numel())
+                    energy += 16 * ((self.reram_read_energy + self.reram_write_energy) * (d_list[-1].numel() + y[i].numel()) + \
+                                    self.reram_write_energy * loss.numel())
+
                     d_list.pop()
                         
                     for l in range(len(self.layers) - 1, -1, -1):
@@ -103,5 +117,10 @@ class PipeLayer:
                         arithmetic += output.arithmetic
                 
                 for l in range(len(self.layers)):
-                        self.layers[l].update(lr, batch_size)
+                    time += 16 * self.reram_write_time * \
+                        (self.layers[l].linear.weight.numel() + self.layers[l].linear.bias.numel())
+                    energy += 16 * self.reram_write_energy * \
+                        (self.layers[l].linear.weight.numel() + self.layers[l].linear.bias.numel())
+                    self.layers[l].update(lr, batch_size)
             print(f"acc: {acc / cnt * 100}%")
+        print(f"time: {time / 1000000} ms, energy: {energy / 1000000000} mj")
