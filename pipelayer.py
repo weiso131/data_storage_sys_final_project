@@ -1,0 +1,101 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class OperationReturn:
+    def __init__(self, output, reram_time: float, reram_energy: float, arithmetic: int):
+        self.output = output
+        self.reram_time = reram_time
+        self.reram_energy = reram_energy
+        self.arithmetic = arithmetic
+
+
+class LieanrLayer:
+    def __init__(self, in_features: int, out_features: int, dtype=torch.float32):
+        self.linear = nn.Linear(in_features=in_features, out_features=out_features, bias=True).to(dtype)
+        self.linear.weight.requires_grad_(False)
+        self.linear.bias.requires_grad_(False)
+        self.dw = torch.zeros_like(self.linear.weight, dtype=dtype)
+        self.db = torch.zeros_like(self.linear.bias, dtype=dtype)
+    
+    def update(self, lr: float, batch_size: int):
+        self.linear.weight -= self.dw * lr / batch_size
+        self.linear.bias -= self.db * lr / batch_size
+        self.dw = torch.zeros_like(self.linear.weight, dtype=self.linear.weight.dtype)
+        self.db = torch.zeros_like(self.linear.bias, dtype=self.linear.bias.dtype)
+
+    def forward(self, x, func=F.relu):
+        time = 0
+        energy = 0
+        # read from memory subarrays, write to morphable subarrays, write to memory subarrays
+        d = func(self.linear(x))
+        arithmetic = 0
+        return OperationReturn(d, time, energy, arithmetic)
+    
+    def backward(self, last_d, loss, cal_last_loss=True):
+        self.dw += loss.view(-1, 1) @ last_d.view(1, -1)
+        self.db += loss
+
+        time = 0  # TODO: meow
+        energy = 0
+        arithmetic = 0
+
+        if cal_last_loss:
+            last_loss = (self.linear.weight.T @ loss) * (last_d > 0).to(last_d.dtype)
+            return OperationReturn(last_loss, time, energy, arithmetic)
+
+        else:
+            return OperationReturn(0, time, energy, arithmetic)
+
+
+
+class PipeLayer:
+    def __init__(self, reram_read_time=29.31, reram_write_time=50.88, 
+                        reram_read_energy=1.08, reram_write_energy=3910):
+        self.layers = []
+        self.reram_read_time = reram_read_time
+        self.reram_write_time = reram_write_time
+        self.reram_read_energy = reram_read_energy
+        self.reram_write_energy = reram_write_energy
+    def push_layer(self, in_features: int, out_features: int, dtype=torch.float32):
+        layer =LieanrLayer(in_features, out_features, dtype)
+        self.layers.append(layer)
+
+    def without_pipeline_train(self, x, y, epoch: int, batch_size=64, lr=0.001):
+        time = 0
+        energy = 0
+        arithmetic = 0
+        for _ in range(epoch):
+            acc = 0
+            for i in range(x.shape[0]):
+                d_list = [x[i]]
+                for l in range(len(self.layers)):
+                    func = F.relu
+                    if (l == len(self.layers) - 1):
+                        func = F.softmax
+
+                    output = self.layers[l].forward(d_list[-1], func)
+                    d_list.append(output.output)
+                    time += output.reram_time
+                    energy += output.reram_energy
+                    arithmetic += output.arithmetic
+                
+                if torch.argmax(d_list[-1]) == torch.argmax(y[i]):
+                    acc += 1
+
+                # need update time, energy, arithmetic
+                loss = d_list[-1] - y[i]
+                d_list.pop()
+                    
+                for l in range(len(self.layers) - 1, -1, -1):
+                    output = self.layers[l].backward(d_list.pop(), loss, l != 0)
+                    loss = output.output
+                    time += output.reram_time
+                    energy += output.reram_energy
+                    arithmetic += output.arithmetic
+                
+                # need update time, energy, arithmetic
+                if (i != 0 and i % batch_size == 0) or (i + 1) == x.shape[0]:
+                    for l in range(len(self.layers)):
+                        self.layers[l].update(lr, batch_size)
+            print(f"acc: {acc / x.shape[0] * 100}%")
