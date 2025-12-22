@@ -47,6 +47,7 @@ y_batches = torch.split(y_train_onehot, batch_size)
 
 print(X_train.numel())
 
+pipelayer.pipeline_train(X_batches, y_batches, 5)
 pipelayer.without_pipeline_train(X_batches, y_batches, 5)
 pipelayer.pipeline_test(X_batches, y_batches)
 pipelayer.without_pipeline_test(X_batches, y_batches)

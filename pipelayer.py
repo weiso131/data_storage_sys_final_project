@@ -120,12 +120,9 @@ class PipeLayer:
                         energy += output.reram_energy
                         arithmetic += output.arithmetic
                 
-                for l in range(len(self.layers)):
-                    time += 16 * self.reram_write_time * \
-                        (self.layers[l].linear.weight.numel() + self.layers[l].linear.bias.numel())
-                    energy += 16 * self.reram_write_energy * \
-                        (self.layers[l].linear.weight.numel() + self.layers[l].linear.bias.numel())
-                    self.layers[l].update(lr, batch_size)
+                _time, _energy = self.__update(lr, batch_size)
+                time += _time
+                energy += _energy
             print(f"acc: {acc / cnt * 100}%")
         print(f"time: {time / 1000000} ms, energy: {energy / 1000000000} mj")
     def without_pipeline_test(self, x_batch, y_batch):
@@ -169,10 +166,10 @@ class PipeLayer:
             batch_size = x.shape[0]
             
             data_cnt = 1
-            input_queue = [NULL] * (len(self.layers) + 1)
+            input_queue = [NULL] * (len(self.layers))
             input_queue[0] = (0, x[0])
             
-            swap_queue = [NULL] * (len(self.layers) + 1)
+            swap_queue = [NULL] * (len(self.layers))
 
             while True:
                 input_cnt = 0
@@ -210,3 +207,98 @@ class PipeLayer:
                     break
         print(f"pipeline test:\nacc: {acc / cnt * 100}%")
         print(f"time:{time / 1000000} ms, energy:{energy / 1000000000} mj")
+    def pipeline_train(self, x_batch, y_batch, epoch: int, lr=0.001):
+        acc = 0
+        cnt = 0
+        time = 0
+        energy = 0
+        pipeline_queues = []
+        for _ in range(len(self.layers)):
+            pipeline_queues.append(deque())
+        for _ in range(epoch):
+            for batch in range(len(x_batch)):
+                x = x_batch[batch].to(self.device)
+                y = y_batch[batch].to(self.device)
+                batch_size = x.shape[0]
+                
+                data_cnt = 1
+                input_queue = [NULL] * (2 * len(self.layers) + 1)
+                input_queue[0] = (0, x[0])
+                
+                swap_queue = [NULL] * (2 * len(self.layers) + 1)
+
+                while True:
+                    input_cnt = 0
+                    if data_cnt < batch_size:
+                        swap_queue[0] = (data_cnt, x[data_cnt])
+                        data_cnt += 1
+                        input_cnt += 1
+                    predict = NULL
+                    parallel_time = 0
+                    # forward
+                    for l in range(len(self.layers)):
+                        if (input_queue[l] == NULL):
+                            continue           
+                        idx, d = input_queue[l]
+                        pipeline_queues[l].append(d)
+                        if (l != len(self.layers) - 1):              
+                            output = self.layers[l].forward(d, F.relu)
+                            parallel_time = max(parallel_time, output.reram_time)
+                            energy += output.reram_energy
+                            swap_queue[l + 1] = (idx, output.output)
+                            input_cnt += 1
+                        else:             
+                            output = self.layers[l].forward(d, F.softmax)
+                            predict = (idx, output.output)
+                            swap_queue[l + 1] = (idx, output.output)
+                            energy += output.reram_energy
+                            parallel_time = max(parallel_time, output.reram_time)
+                    # get loss
+                    if (input_queue[len(self.layers)] != NULL):
+                        idx, d = input_queue[len(self.layers)]
+                        loss = d - y[idx]
+                        swap_queue[len(self.layers) + 1] = (idx, loss)
+                        input_cnt += 1
+                        parallel_time = max(parallel_time, 16 * ((self.reram_read_time + self.reram_write_time) * \
+                                                                (d.numel() + y[idx].numel()) + \
+                                                                self.reram_write_time * loss.numel()))
+                        energy += 16 * ((self.reram_read_energy + self.reram_write_energy) * (d.numel() + y[idx].numel()) + \
+                                        self.reram_write_energy * loss.numel())
+                    # backward
+                    for l in range(len(self.layers) - 1, -1, -1):
+                        if (input_queue[2 * len(self.layers) - l] == NULL):
+                            continue 
+                        idx, loss = input_queue[2 * len(self.layers) - l]
+                        output = self.layers[l].backward(pipeline_queues[l].popleft(), loss, l != 0)
+                        if l != 0:
+                            swap_queue[2 * len(self.layers) - l + 1] = (idx, output.output)
+                        parallel_time = max(parallel_time, output.reram_time)
+                        energy += output.reram_energy
+
+                    time += parallel_time
+                    input_queue = swap_queue
+                    swap_queue = [NULL] * (2 * len(self.layers) + 1)
+                    if predict != NULL:
+                        idx, result = predict
+                        cnt += 1
+                        if torch.argmax(result) == torch.argmax(y[idx]):
+                            acc += 1
+                    if input_cnt == 0:
+                        break
+                # update
+                _time, _energy = self.__update(lr, batch_size)
+                time += _time
+                energy += _energy
+
+            print(f"acc: {acc / cnt * 100}%")
+        print(f"time:{time / 1000000} ms, energy:{energy / 1000000000} mj")
+    def __update(self, lr, batch_size):
+        time = 0
+        energy = 0
+        for l in range(len(self.layers)):
+            time += 16 * self.reram_write_time * \
+                (self.layers[l].linear.weight.numel() + self.layers[l].linear.bias.numel())
+            energy += 16 * self.reram_write_energy * \
+                (self.layers[l].linear.weight.numel() + self.layers[l].linear.bias.numel())
+            self.layers[l].update(lr, batch_size)
+        return (time, energy)
