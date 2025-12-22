@@ -1,6 +1,10 @@
+from collections import deque
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+NULL = 0
 
 class OperationReturn:
     def __init__(self, output, reram_time: float, reram_energy: float, arithmetic: int):
@@ -124,3 +128,85 @@ class PipeLayer:
                     self.layers[l].update(lr, batch_size)
             print(f"acc: {acc / cnt * 100}%")
         print(f"time: {time / 1000000} ms, energy: {energy / 1000000000} mj")
+    def without_pipeline_test(self, x_batch, y_batch):
+        time = 0
+        energy = 0
+        arithmetic = 0
+        acc = 0
+        cnt = 0
+        for batch in range(len(x_batch)):
+            x = x_batch[batch].to(self.device)
+            y = y_batch[batch].to(self.device)
+            batch_size = x.shape[0]
+
+            for i in range(batch_size):
+                d_list = [x[i]]
+                for l in range(len(self.layers)):
+                    func = F.relu
+                    if (l == len(self.layers) - 1):
+                        func = F.softmax
+
+                    output = self.layers[l].forward(d_list[-1], func)
+                    d_list.append(output.output)
+                    time += output.reram_time
+                    energy += output.reram_energy
+                    arithmetic += output.arithmetic
+                
+                cnt += 1
+                if torch.argmax(d_list[-1]) == torch.argmax(y[i]):
+                    acc += 1
+            
+        print(f"test:\nacc: {acc / cnt * 100}%")
+        print(f"time: {time / 1000000} ms, energy: {energy / 1000000000} mj")
+    def pipeline_test(self, x_batch, y_batch):
+        acc = 0
+        cnt = 0
+        time = 0
+        energy = 0
+        for batch in range(len(x_batch)):
+            x = x_batch[batch].to(self.device)
+            y = y_batch[batch].to(self.device)
+            batch_size = x.shape[0]
+            
+            data_cnt = 1
+            input_queue = [NULL] * (len(self.layers) + 1)
+            input_queue[0] = (0, x[0])
+            
+            swap_queue = [NULL] * (len(self.layers) + 1)
+
+            while True:
+                input_cnt = 0
+                if data_cnt < batch_size:
+                    swap_queue[0] = (data_cnt, x[data_cnt])
+                    data_cnt += 1
+                    input_cnt += 1
+                predict = NULL
+                parallel_time = 0
+                for l in range(len(self.layers)):
+                    if (input_queue[l] == NULL):
+                        continue                    
+                    if (l != len(self.layers) - 1):
+                        idx, d = input_queue[l]                
+                        output = self.layers[l].forward(d, F.relu)
+                        parallel_time = max(parallel_time, output.reram_time)
+                        energy += output.reram_energy
+                        swap_queue[l + 1] = (idx, output.output)
+                        input_cnt += 1
+                    else:
+                        idx, d = input_queue[l]                
+                        output = self.layers[l].forward(d, F.softmax)
+                        predict = (idx, output.output)
+                        energy += output.reram_energy
+                        parallel_time = max(parallel_time, output.reram_time)
+                time += parallel_time
+                input_queue = swap_queue
+                swap_queue = [NULL] * (len(self.layers) + 1)
+                if predict != NULL:
+                    idx, result = predict
+                    cnt += 1
+                    if torch.argmax(result) == torch.argmax(y[idx]):
+                        acc += 1
+                if input_cnt == 0:
+                    break
+        print(f"pipeline test:\nacc: {acc / cnt * 100}%")
+        print(f"time:{time / 1000000} ms, energy:{energy / 1000000000} mj")

@@ -38,9 +38,8 @@ batch_size = 64
 lr = 0.001
 
 pipelayer = PipeLayer(device=torch.device("cuda"))
-pipelayer.push_layer(in_features=784, out_features=500, dtype=dtype)
-pipelayer.push_layer(in_features=500, out_features=250, dtype=dtype)
-pipelayer.push_layer(in_features=250, out_features=10, dtype=dtype)
+pipelayer.push_layer(in_features=784, out_features=1000, dtype=dtype)
+pipelayer.push_layer(in_features=1000, out_features=10, dtype=dtype)
 
 X_train = X_train.view(-1, 784)
 X_batches = torch.split(X_train, batch_size)
@@ -49,3 +48,5 @@ y_batches = torch.split(y_train_onehot, batch_size)
 print(X_train.numel())
 
 pipelayer.without_pipeline_train(X_batches, y_batches, 5)
+pipelayer.pipeline_test(X_batches, y_batches)
+pipelayer.without_pipeline_test(X_batches, y_batches)
