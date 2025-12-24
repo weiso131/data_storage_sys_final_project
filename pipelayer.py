@@ -3,8 +3,16 @@ from collections import deque
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
 NULL = 0
+
+PER_SPIKE_BIT = 16
+
+COST = 16 / PER_SPIKE_BIT
+
+def get_numel(x):
+    return math.ceil(x.numel() / 128)
 
 class OperationReturn:
     def __init__(self, output, reram_time: float, reram_energy: float, arithmetic: int):
@@ -32,10 +40,10 @@ class LieanrLayer:
                         reram_read_energy=1.08, reram_write_energy=3910):
         d = func(self.linear(x))
 
-        time = 16 * ((reram_read_time + reram_write_time) * x.numel() + \
-                        reram_write_time * d.numel())
-        energy = 16 * ((reram_read_energy + reram_write_energy) * x.numel() + \
-                       reram_write_energy * d.numel())
+        time = COST * ((reram_read_time + reram_write_time) * get_numel(x) + \
+                        reram_write_time * get_numel(d))
+        energy = COST * ((reram_read_energy + reram_write_energy) * get_numel(x) + \
+                       reram_write_energy * get_numel(d))
         # read from memory subarrays, write to morphable subarrays, write to memory subarrays
         arithmetic = 0
         return OperationReturn(d, time, energy, arithmetic)
@@ -44,18 +52,19 @@ class LieanrLayer:
                         reram_read_energy=1.08, reram_write_energy=3910):
         self.dw += loss.view(-1, 1) @ last_d.view(1, -1)
         self.db += loss
-        time = 16 * ((reram_read_time + reram_write_time) * last_d.numel() + \
-                    (reram_read_time + reram_write_time) * loss.numel())
-        energy = 16 * ((reram_read_energy + reram_write_energy) * last_d.numel() + \
-                    (reram_read_energy + reram_write_energy) * loss.numel())
+        time = COST * ((reram_read_time + reram_write_time) * get_numel(last_d) + \
+                    (reram_read_time + reram_write_time) * get_numel(loss))
+        energy = COST * ((reram_read_energy + reram_write_energy) * get_numel(last_d) + \
+                    (reram_read_energy + reram_write_energy) * get_numel(loss))
         arithmetic = 0
 
         if cal_last_loss:
-            last_loss = (self.linear.weight.T @ loss) * (last_d > 0).to(last_d.dtype)
-            time += 16 * reram_write_time * last_loss.numel()
-            energy += 16 * ((reram_read_energy + reram_write_energy) * last_d.numel() + \
-                    (reram_read_energy + reram_write_energy) * loss.numel() + \
-                    reram_write_energy * last_loss.numel())
+            last_loss = (self.linear.weight.T @ loss) * \
+                (last_d > 0).to(last_d.dtype)
+            time += COST * reram_write_time * get_numel(last_loss)
+            energy += COST * ((reram_read_energy + reram_write_energy) * get_numel(last_d) + \
+                    (reram_read_energy + reram_write_energy) * get_numel(loss) + \
+                    reram_write_energy * get_numel(last_loss))
             return OperationReturn(last_loss, time, energy, arithmetic)
 
         else:
@@ -106,10 +115,10 @@ class PipeLayer:
                         acc += 1
                     loss = d_list[-1] - y[i]
 
-                    time += 16 * ((self.reram_read_time + self.reram_write_time) * (d_list[-1].numel() + y[i].numel()) + \
-                                   self.reram_write_time * loss.numel())
-                    energy += 16 * ((self.reram_read_energy + self.reram_write_energy) * (d_list[-1].numel() + y[i].numel()) + \
-                                    self.reram_write_energy * loss.numel())
+                    time += COST * ((self.reram_read_time + self.reram_write_time) * (get_numel(d_list[-1]) + get_numel(y[i])) + \
+                                   self.reram_write_time * get_numel(loss))
+                    energy += COST * ((self.reram_read_energy + self.reram_write_energy) * (get_numel(d_list[-1]) + get_numel(y[i])) + \
+                                    self.reram_write_energy * get_numel(loss))
 
                     d_list.pop()
                         
@@ -125,6 +134,8 @@ class PipeLayer:
                 energy += _energy
             print(f"acc: {acc / cnt * 100}%")
         print(f"time: {time / 1000000} ms, energy: {energy / 1000000000} mj")
+
+        return time
     def without_pipeline_test(self, x_batch, y_batch):
         time = 0
         energy = 0
@@ -155,6 +166,8 @@ class PipeLayer:
             
         print(f"test:\nacc: {acc / cnt * 100}%")
         print(f"time: {time / 1000000} ms, energy: {energy / 1000000000} mj")
+
+        return time
     def pipeline_test(self, x_batch, y_batch):
         acc = 0
         cnt = 0
@@ -207,6 +220,8 @@ class PipeLayer:
                     break
         print(f"pipeline test:\nacc: {acc / cnt * 100}%")
         print(f"time:{time / 1000000} ms, energy:{energy / 1000000000} mj")
+
+        return time
     def pipeline_train(self, x_batch, y_batch, epoch: int, lr=0.001):
         acc = 0
         cnt = 0
@@ -259,11 +274,11 @@ class PipeLayer:
                         loss = d - y[idx]
                         swap_queue[len(self.layers) + 1] = (idx, loss)
                         input_cnt += 1
-                        parallel_time = max(parallel_time, 16 * ((self.reram_read_time + self.reram_write_time) * \
-                                                                (d.numel() + y[idx].numel()) + \
-                                                                self.reram_write_time * loss.numel()))
-                        energy += 16 * ((self.reram_read_energy + self.reram_write_energy) * (d.numel() + y[idx].numel()) + \
-                                        self.reram_write_energy * loss.numel())
+                        parallel_time = max(parallel_time, COST * ((self.reram_read_time + self.reram_write_time) * \
+                                                                (get_numel(d)+ get_numel(y[idx])) + \
+                                                                self.reram_write_time * get_numel(loss)))
+                        energy += COST * ((self.reram_read_energy + self.reram_write_energy) * get_numel(d + get_numel(y[idx])) + \
+                                        self.reram_write_energy * get_numel(loss))
                     # backward
                     for l in range(len(self.layers) - 1, -1, -1):
                         if (input_queue[2 * len(self.layers) - l] == NULL):
@@ -292,13 +307,14 @@ class PipeLayer:
 
             print(f"acc: {acc / cnt * 100}%")
         print(f"time:{time / 1000000} ms, energy:{energy / 1000000000} mj")
+        return time
     def __update(self, lr, batch_size):
         time = 0
         energy = 0
         for l in range(len(self.layers)):
-            time += 16 * self.reram_write_time * \
-                (self.layers[l].linear.weight.numel() + self.layers[l].linear.bias.numel())
-            energy += 16 * self.reram_write_energy * \
-                (self.layers[l].linear.weight.numel() + self.layers[l].linear.bias.numel())
+            time += COST * self.reram_write_time * \
+                (get_numel(self.layers[l].linear.weight) + get_numel(self.layers[l].linear.bias))
+            energy += COST * self.reram_write_energy * \
+                (get_numel(self.layers[l].linear.weight) + get_numel(self.layers[l].linear.bias))
             self.layers[l].update(lr, batch_size)
         return (time, energy)

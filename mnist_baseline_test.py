@@ -72,7 +72,7 @@ gpu_logger = GPUPowerLogger(gpu_index=0, interval=0.1)
 gpu_logger.start()
 
 elapsed_time = 0
-
+start = time.perf_counter()
 records = []
 with torch.no_grad():
     for data, target in train_loader:
@@ -86,13 +86,13 @@ with torch.no_grad():
         f_end = time.perf_counter()
         elapsed_time += f_end - f_start
 
-        records.append((f_start, f_end))
+records.append((start, time.perf_counter()))
         
 gpu_logger.stop()
 gpu_logger.join()
 avg_power = gpu_logger.get_average_power(records)
 energy = avg_power * elapsed_time # J = W * s
 
-print(f"\n訓練總時間: {elapsed_time:.3f} s")
-print(f"平均 GPU 功耗: {avg_power:.2f} W")
-print(f"估算能耗: {energy:.2f} J")
+print(f"\n訓練總時間: {elapsed_time} s")
+print(f"平均 GPU 功耗: {avg_power} W")
+print(f"估算能耗: {energy} J")
