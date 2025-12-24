@@ -41,9 +41,10 @@ X_train = X_train.view(-1, 784)
 X_batches = torch.split(X_train, batch_size)
 y_batches = torch.split(y_train_onehot, batch_size)
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Mnist A
-pipelayer = PipeLayer(device=torch.device("cuda"))
+pipelayer = PipeLayer(device=device)
 
 pipelayer.push_layer(in_features=784, out_features=1000, dtype=dtype)
 pipelayer.push_layer(in_features=1000, out_features=10, dtype=dtype)
@@ -57,7 +58,7 @@ print(f"train: {np_train / p_train}, test: {np_test / p_test}")
 print("=============================================================")
 
 # Mnist B
-pipelayer = PipeLayer(device=torch.device("cuda"))
+pipelayer = PipeLayer(device=device)
 
 pipelayer.push_layer(in_features=784, out_features=500, dtype=dtype)
 pipelayer.push_layer(in_features=500, out_features=250, dtype=dtype)
@@ -72,7 +73,7 @@ print(f"train: {np_train / p_train}, test: {np_test / p_test}")
 print("=============================================================")
 
 # Mnist C
-pipelayer = PipeLayer(device=torch.device("cuda"))
+pipelayer = PipeLayer(device=device)
 
 pipelayer.push_layer(in_features=784, out_features=1500, dtype=dtype)
 pipelayer.push_layer(in_features=1500, out_features=1000, dtype=dtype)
