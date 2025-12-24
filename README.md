@@ -3,7 +3,7 @@
 ```bash
 python3.10 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 ```
 ## Usage
 ### 1. Pipelayer "Simulation"
@@ -21,3 +21,4 @@ Key parameters:
 python3.10 mnist_baseline_train.py
 python3.10 mnist_baseline_test.py
 ```
+type `A`, `B`, `C` to choice model
